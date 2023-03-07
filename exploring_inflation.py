@@ -2,14 +2,10 @@ from pickle import GLOBAL
 from select import select
 from unicodedata import name
 import pandas as pd
-import yfinance
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
-import yaml
 import numpy as np
-import holidays
-import draw_functions
 import locale
 import typing
 import plotly.express as px
