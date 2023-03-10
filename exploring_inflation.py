@@ -53,95 +53,84 @@ inflation_dictionary = {'Countrywide':cw_dictionary,
                         'South':so_dictionary,
                         'Northeast':ne_dictionary
                         }
-def get_inflation_data(start_year: int, end_year: int, series: Optional[str] = 'CUUR0000SA0', series_name: Optional[str] = 'INFLATION') -> pd.DataFrame:
+def get_inflation_data(start_year: int, end_year: int, series_dict: Optional[Dict[str, str]] = {'CUUR0000SA0':'Countrywide CPI'}) -> pd.DataFrame:
+    inflation_df = pd.DataFrame()
     # This data source also contains Ohio real estate inflation data
-    parameters = json.dumps({"registrationkey":"913a29444d3849e58aaa8f651a4ceec6","seriesid":[series],"startyear":start_year,"endyear":end_year})
+    parameters = json.dumps({"seriesid":list(series_dict.keys()), "startyear":start_year, "endyear":end_year, "registrationkey":"913a29444d3849e58aaa8f651a4ceec6"})
     headers = {'Content-type': 'application/json'}
-    response = json.loads(requests.post('https://api.bls.gov/publicAPI/v2/timeseries/data/', data = parameters, headers = headers).text)
-    inflation_df = pd.DataFrame.from_records(response['Results']['series'][0]['data'])
+    response = requests.post('https://api.bls.gov/publicAPI/v2/timeseries/data/', data = parameters, headers = headers)
+    response = json.loads(response.text)
+    # Add each series data to dataframe
+    i = 0
+    for ser in series_dict:
+        inflation_df[series_dict[ser]] = pd.DataFrame.from_records(response['Results']['series'][i]['data'])['value'].astype(float)
+        i += 1
+    # Get date field
+    date_df = pd.DataFrame.from_records(response['Results']['series'][0]['data'])
     function = lambda x: datetime.strptime(x['periodName'] + "," + x['year'], '%B,%Y')
-    inflation_df.index=inflation_df.apply(function, axis = 1)
-    inflation_df[series_name] = inflation_df['value'].astype(float)
-    reindexed_inflation_df = inflation_df[series_name].reindex(pd.date_range(start=inflation_df[series_name].index.min(),
+    inflation_df.index = date_df.apply(function, axis = 1)
+    reindexed_inflation_df = inflation_df.reindex(pd.date_range(start=inflation_df.index.min(),
                                                   end=date(end_year, 12, 31),
                                                   freq='1D'))
     reindexed_inflation_df = reindexed_inflation_df.interpolate(method='time', limit_direction='forward')
-    return(reindexed_inflation_df.to_frame(name=series_name))
+    return(reindexed_inflation_df)
 
-def join_inflation_data(dataframe: pd.DataFrame, inflation: pd.DataFrame) -> pd.DataFrame:
-    dataframe = pd.merge(dataframe, inflation, how='left', left_index=True, right_index=True)
-    dataframe.dropna(how='all', inplace=True)
-    dataframe[inflation.columns[0]] = dataframe[inflation.columns[0]].fillna(method="ffill")
-    return(dataframe)
-
-def normalize_data(df: pd.DataFrame, position: int = 0) -> pd.DataFrame:
-    beg = df.iloc[-position]
+def normalize_data(df: pd.DataFrame, date: pd.Timestamp) -> pd.DataFrame:
+    beg = df.loc[date]
     return df/beg
 
-def get_data(start_year, end_year):
-    # Retrieve data
-    overall_cpi = get_inflation_data(start_year, end_year,'CUUR0000SA0','Overall CPI')
-    urban_nsa = get_inflation_data(start_year, end_year,'CUUR0000SAH1','Urban Shelter Not Seasonally Adjusted')
-    urban_sa = get_inflation_data(start_year, end_year,'CUSR0000SAH1','Urban Shelter Seasonally Adjusted')
-    midwest_cpi = get_inflation_data(start_year, end_year,'CUURS200SA0','Midwest CPI')
-    mid_atlantic_urban_nsa = get_inflation_data(start_year, end_year,'CUUR0120SAH1','Mid-Atlantic Shelter Not Seasonally Adjusted')
-    midwest_urban_nsa = get_inflation_data(start_year, end_year,'CUUR0200SAH1','Midwest Shelter Not Seasonally Adjusted')
-    # Join data
-    all_inflation_data = join_inflation_data(overall_cpi, urban_nsa)
-    all_inflation_data = join_inflation_data(all_inflation_data, urban_sa)
-    all_inflation_data = join_inflation_data(all_inflation_data, mid_atlantic_urban_nsa)
-    all_inflation_data = join_inflation_data(all_inflation_data, midwest_urban_nsa)
-    return(join_inflation_data(all_inflation_data, midwest_cpi))
+def get_all_data(start_year, end_year):
+    series_dict = {}
+    for region in inflation_dictionary:
+        region_dict = inflation_dictionary[region]
+        for name in region_dict:
+            series_dict[region_dict[name]] = region + ' ' + name
+    return(get_inflation_data(start_year, end_year, series_dict))
 
-def compare_regions(regions, start_year, end_year, type = None):
-    df = pd.DataFrame()
-    k = 0
+def compare_regions(inflation_df, regions, start_year, end_year, type = None):
+    series = []
     for region in regions:
         region_dict = inflation_dictionary[region]
-        for i in region_dict:
-            new_data = get_inflation_data(start_year, end_year, region_dict[i], region + ' ' + i)
-            if k == 0:
-                df = new_data
-                k += 1
-            else: 
-                df = join_inflation_data(df, new_data)
+        for name in region_dict:
+            series.append(region + ' ' + name)
+    df = inflation_df[series]
     if type is None:
-        inflation_figure(df)
+        inflation_figure(df, start_year, end_year)
     elif type == 'Normal':
-        normalized_inflation_figure(df)
+        normalized_inflation_figure(df, start_year, end_year)
     elif type == 'Derived':
-        derived_inflation_figure(df)
+        derived_inflation_figure(df, start_year, end_year)
     elif type == 'Ratio':
-        ratio_figure(df, regions)
+        ratio_figure(df, regions, start_year, end_year)
     else:
         return(f'Type, {type} not found')
     
 
-def inflation_figure(figure_values):
-    fig = px.line(figure_values, labels={'value':'$ Value', 'index':'Trading Date', 'variable':'Equity'})
+def inflation_figure(figure_values, start_year, end_year):
+    fig = px.line(figure_values, labels={'value':'Value', 'index':'Date', 'variable':'Series'})
+    fig.update_xaxes(type = 'date', range = [pd.Timestamp(year = start_year, month = 1, day = 1), pd.to_datetime(date.today())])
     fig.show()
 
-def normalized_inflation_figure(figure_values):
-    figure_values = normalize_data(figure_values)
-    fig = px.line(figure_values, labels={'value':'$ Value', 'index':'Trading Date', 'variable':'Equity'})
+def normalized_inflation_figure(figure_values, start_year, end_year):
+    figure_values = normalize_data(figure_values, pd.Timestamp(year = start_year, month = 1, day = 1))
+    fig = px.line(figure_values, labels={'value':'Value Normalized to Beginning of Time Period', 'index':'Date', 'variable':'Series'})
+    fig.update_xaxes(type = 'date', range = [pd.Timestamp(year = start_year, month = 1, day = 1), pd.to_datetime(date.today())])
     fig.show()
 
-def derive_data(dataframe):
-    dataframe.dropna(how='all', inplace = True)
-    return(dataframe.diff().rolling(60).mean())
-
-def derived_inflation_figure(figure_values):
-    figure_values = derive_data(figure_values)
-    fig = px.line(figure_values, labels={'value':'$ Value', 'index':'Trading Date', 'variable':'Equity'})
+def derived_inflation_figure(figure_values, start_year, end_year):
+    figure_values.dropna(how='all', inplace = True)
+    figure_values = figure_values.diff().rolling(60).mean()
+    fig = px.line(figure_values, labels={'value':'60-Day Rolling Average of Change in Inflation', 'index':'Date', 'variable':'Series'})
+    fig.update_xaxes(type = 'date', range = [pd.Timestamp(year = start_year, month = 1, day = 1), pd.to_datetime(date.today())])
     fig.show()
 
-def ratio_figure(figure_values, regions):
+def ratio_figure(figure_values, regions, start_year, end_year):
     df = pd.DataFrame()
     for reg in regions:
         df[reg + ' Rent to CPI Ratio'] = figure_values[reg + ' ' + 'Urban Rent']/figure_values[reg + ' ' + 'CPI']
         df[reg + ' House to CPI Ratio'] = figure_values[reg + ' ' + 'Urban Housing']/figure_values[reg + ' ' + 'CPI']
         df[reg + ' House to Rent Ratio'] = figure_values[reg + ' ' + 'Urban Housing']/figure_values[reg + ' ' + 'Urban Rent']
-    normalized_inflation_figure(df)
+    normalized_inflation_figure(df, start_year, end_year)
     #Normalizing the raw data before or after doesn't matter
     
 
